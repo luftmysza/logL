@@ -48,6 +48,7 @@ func (j JournaldRaw) GetValue[T any](key string) T {
 }
 
 type Event struct {
+	Provider    string
 	Timestamp   time.Time
 	Host        string
 	Application *Application
@@ -138,7 +139,7 @@ func runJournaldPipeline() error {
 		return err
 	}
 
-	unitOfWork, err := normalizeJournaldLogs(batch)
+	unitOfWork, err := ctx.normalizeJournaldLogs(batch)
 	if err != nil {
 		return err
 	}
@@ -256,7 +257,7 @@ func extractJournald(cursor string) (InputBatch, error) {
 	return batch, nil
 }
 
-func normalizeJournaldLogs(batch InputBatch) (UnitOfWork, error) {
+func (c PipelineCtx) normalizeJournaldLogs(batch InputBatch) (UnitOfWork, error) {
 	var (
 		applications map[string]*Application
 		boots        map[string]*BootEntry
@@ -353,7 +354,10 @@ func normalizeJournaldLogs(batch InputBatch) (UnitOfWork, error) {
 			return unitOfWork, fmt.Errorf("ERROR: Log entry %d's cannot be converted", i)
 		}
 
+		provider := c.provider
+
 		event := Event{
+			Provider:    provider,
 			Timestamp:   timestamp,
 			Host:        log.GetValue[string]("_HOSTNAME"),
 			Application: app,
@@ -448,6 +452,7 @@ func persistBoot(tx *sql.Tx, boot *BootEntry) error {
 func persistEvent(tx *sql.Tx, event Event) error {
 	_, err := tx.Exec(`
 			INSERT INTO events (
+				provider,
 				timestamp,
 				host,
 				application_id,
@@ -457,9 +462,10 @@ func persistEvent(tx *sql.Tx, event Event) error {
 				pid,
 				cursor
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(cursor) DO NOTHING
 		`,
+		event.Provider,
 		event.Timestamp.UnixMicro(),
 		event.Host,
 		event.Application.ID,
@@ -561,6 +567,7 @@ func createSchemaIfNotExists(db *sql.DB) error {
 	_, err = db.Exec(`
 			CREATE TABLE IF NOT EXISTS events (
 				id             INTEGER PRIMARY KEY,
+				provider       TEXT NOT NULL,
 				timestamp      INTEGER NOT NULL,
 				host           TEXT,
 				application_id INTEGER,
