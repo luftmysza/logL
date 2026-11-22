@@ -19,14 +19,12 @@ import (
 const DBPath string = "data/logoracle.db"
 
 const (
-	EMERG byte = iota
-	ALERT
-	CRIT
-	ERR
+	CRITICAL byte = iota + 1
+	ERROR
 	WARNING
-	NOTICE
-	INFO
-	DEBUG
+	INFORMATION
+	VERBOSE
+	UNCLASSIFIED = 255
 )
 
 type JournaldRaw map[string]json.RawMessage
@@ -109,7 +107,7 @@ func main() {
 
 func runJournaldPipeline() error {
 	if err := os.MkdirAll(filepath.Dir(DBPath), 0755); err != nil {
-		return fmt.Errorf("ERROR: creating database directory: %w", err)
+		return fmt.Errorf("ERROR :: creating database directory :: %w", err)
 	}
 
 	db, err := OpenDatabase(DBPath)
@@ -121,7 +119,7 @@ func runJournaldPipeline() error {
 	}()
 
 	if err := createSchemaIfNotExists(db); err != nil {
-		return fmt.Errorf("ERROR: initializing database schema: %w", err)
+		return fmt.Errorf("ERROR :: initializing database schema :: %w", err)
 	}
 
 	ctx := &PipelineCtx{
@@ -265,21 +263,22 @@ func (c PipelineCtx) normalizeJournaldLogs(batch InputBatch) (UnitOfWork, error)
 	)
 	applications = make(map[string]*Application)
 	boots = make(map[string]*BootEntry)
+
 	for i, boot := range batch.Boots {
 		key := boot.GetValue[string]("boot_id")
 		if key == "" {
-			return unitOfWork, fmt.Errorf("ERROR: boot entry %d doesn't exist", i)
+			return unitOfWork, fmt.Errorf("ERROR :: boot entry %d doesn't exist", i)
 		}
 
 		microseconds := boot.GetValue[int64]("first_entry")
 		if microseconds == 0 {
-			return unitOfWork, fmt.Errorf("ERROR: boot entry %d's time_from is invalid", i)
+			return unitOfWork, fmt.Errorf("ERROR :: boot entry %d's time_from is invalid", i)
 		}
 		timeFrom := time.UnixMicro(microseconds).UTC()
 
 		microseconds = boot.GetValue[int64]("last_entry")
 		if microseconds == 0 {
-			return unitOfWork, fmt.Errorf("ERROR: boot entry %d's time_to is invalid", i)
+			return unitOfWork, fmt.Errorf("ERROR :: boot entry %d's time_to is invalid", i)
 		}
 		timeTo := time.UnixMicro(microseconds).UTC()
 
@@ -310,23 +309,15 @@ func (c PipelineCtx) normalizeJournaldLogs(batch InputBatch) (UnitOfWork, error)
 
 		bootGUID := log.GetValue[string]("_BOOT_ID")
 		if bootGUID == "" {
-			return unitOfWork, fmt.Errorf("ERROR: Log entry %d missing boot GUID", i)
+			return unitOfWork, fmt.Errorf("ERROR :: Log entry %d missing boot GUID", i)
 		}
 		boot := boots[bootGUID]
-
-		// if boot == nil {
-		// 	boot = &BootEntry{
-		// 		GUID: bootGUID,
-		// 	}
-		// 	boots[bootGUID] = boot
-		//	unitOfWork.BootEntries = append(unitOfWork.BootEntries, boot)
-		// }
 
 		timestampStr := log.GetValue[string]("__REALTIME_TIMESTAMP")
 		microseconds, err := strconv.ParseInt(timestampStr, 10, 64)
 		if err != nil {
 			return unitOfWork,
-				fmt.Errorf("ERROR: Log entry %d features invalid timestamp %q - %w",
+				fmt.Errorf("ERROR :: Log entry %d features invalid timestamp %q - %w",
 					i, timestampStr, err)
 		}
 		timestamp := time.UnixMicro(microseconds).UTC()
@@ -335,23 +326,36 @@ func (c PipelineCtx) normalizeJournaldLogs(batch InputBatch) (UnitOfWork, error)
 		severity := byte(255)
 		if severityStr != "" {
 			value, err := strconv.ParseUint(severityStr, 10, 8)
-			if err == nil && value <= 7 {
-				severity = byte(value)
+			if err == nil {
+				switch value {
+				case 0, 1, 2:
+					severity = CRITICAL
+				case 3:
+					severity = ERROR
+				case 4:
+					severity = WARNING
+				case 5, 6:
+					severity = INFORMATION
+				case 7:
+					severity = VERBOSE
+				default:
+					severity = UNCLASSIFIED
+				}
 			}
 		}
 
 		cursor := log.GetValue[string]("__CURSOR")
 		if cursor == "" {
-			return unitOfWork, fmt.Errorf("ERROR: Log entry %d missing journald cursor", i)
+			return unitOfWork, fmt.Errorf("ERROR :: Log entry %d missing journald cursor", i)
 		}
 
 		pidStr := log.GetValue[string]("_PID")
 		if pidStr == "" {
-			return unitOfWork, fmt.Errorf("ERROR: Log entry %d missing PID", i)
+			return unitOfWork, fmt.Errorf("ERROR :: Log entry %d missing PID", i)
 		}
 		pid, err := strconv.ParseInt(pidStr, 10, 64)
 		if err != nil {
-			return unitOfWork, fmt.Errorf("ERROR: Log entry %d's cannot be converted", i)
+			return unitOfWork, fmt.Errorf("ERROR :: Log entry %d's cannot be converted", i)
 		}
 
 		provider := c.provider
@@ -441,7 +445,7 @@ func persistBoot(tx *sql.Tx, boot *BootEntry) error {
 		boot.TimeTo.UnixMicro(),
 	)
 	if err != nil {
-		return fmt.Errorf("ERROR: persisting boot %s: %w", boot.GUID, err)
+		return fmt.Errorf("ERROR :: persisting boot %s :: %w", boot.GUID, err)
 	}
 
 	return tx.QueryRow(`
